@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Lumina — semantic media search</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/styles.css?v=4" />
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/">Lumina</a>
+    <span class="brand-sub">SEMANTIC MEDIA SEARCH</span>
+    <button id="foldersBtn" class="topbar-btn" type="button">
+      <span class="material-symbols-outlined">folder_managed</span>
+      <span>Folders</span>
+    </button>
+  </header>
+
+  <section class="hero">
+    <form id="searchForm" class="search-wrap">
+      <span class="material-symbols-outlined search-icon">auto_awesome</span>
+      <input id="q" type="text" placeholder="Describe the memory you are looking for…" autocomplete="off" autofocus />
+      <span class="kbd-hint">⌘K</span>
+    </form>
+    <div class="chips">
+      <button type="button" class="chip type-chip active" data-type="">All media</button>
+      <button type="button" class="chip type-chip" data-type="photo">Photos</button>
+      <button type="button" class="chip type-chip" data-type="video">Videos</button>
+      <span class="chip-divider"></span>
+      <button type="button" class="chip chip-ai" id="deepChip">
+        <span class="material-symbols-outlined">auto_awesome</span>Deep search
+      </button>
+    </div>
+  </section>
+
+  <div class="layout">
+    <main>
+      <div class="results-head">
+        <span id="status" class="results-label">&nbsp;</span>
+        <h1 id="resultsTitle">Library</h1>
+      </div>
+      <div id="grid" class="masonry"></div>
+    </main>
+
+    <aside id="tracePanel" class="hidden">
+      <div class="insights-head">
+        <div class="insights-icon"><span class="material-symbols-outlined">auto_awesome</span></div>
+        <h2>AI Insights</h2>
+      </div>
+      <div class="insights-card">
+        <div class="trace-header">
+          <span class="pulse"></span>
+          <span class="trace-state">agent working…</span>
+        </div>
+        <div id="trace"></div>
+        <div id="traceSummary"></div>
+      </div>
+    </aside>
+  </div>
+
+  <div id="viewer" class="hidden">
+    <div class="viewer-backdrop"></div>
+    <div class="viewer-body">
+      <button id="viewerClose" aria-label="Close">
+        <span class="material-symbols-outlined">close</span>
+      </button>
+      <div id="viewerMedia"></div>
+      <aside id="viewerMeta"></aside>
+    </div>
+  </div>
+
+  <div id="foldersModal" class="hidden">
+    <div class="modal-backdrop"></div>
+    <div class="modal-card">
+      <div class="modal-head">
+        <h2>Synced folders</h2>
+        <button id="foldersClose" class="icon-btn" aria-label="Close">
+          <span class="material-symbols-outlined">close</span>
+        </button>
+      </div>
+      <p class="modal-desc">Watched folders are rescanned every minute. New media is indexed automatically; files deleted from disk are removed from the gallery.</p>
+      <form id="folderAddForm">
+        <input id="folderPath" type="text" placeholder="/absolute/path/to/folder" autocomplete="off" spellcheck="false" />
+        <button type="submit" class="btn-primary">Add</button>
+      </form>
+      <div id="folderError" class="folder-error"></div>
+      <ul id="folderList"></ul>
+      <div class="modal-foot">
+        <span id="syncStatus" class="sync-status"></span>
+        <button id="syncNow" class="btn-ai" type="button">
+          <span class="material-symbols-outlined">sync</span>Sync now
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/app.js?v=4"></script>
+</body>
+</html>

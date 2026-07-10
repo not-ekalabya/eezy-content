@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(rm -rf data/lancedb data/thumbs/*)",
+      "Bash(.venv/bin/python ingest.py /tmp/vs-test)"
+    ]
+  }
+}
