@@ -1,4 +1,4 @@
-# Lumina — semantic media search
+# EezyContent — semantic media search
 
 Semantic search over your photos and videos. Ingest is cheap and non-LLM (shot detection → SigLIP-2 embeddings + Whisper ASR + OCR → LanceDB). Intelligence lives on the query side: an agent (Claude) with search/look/enrich tools inspects candidate frames through a VLM and writes captions/tags back to the index, so the library gets smarter in the regions you actually search.
 
