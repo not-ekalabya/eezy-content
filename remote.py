@@ -71,6 +71,10 @@ def embed_texts(texts: list[str]) -> list[list[float]]:
     return _call("EmbeddingService", "embed_texts", texts)
 
 
+def vlm_chat(messages: list[dict], max_new_tokens: int = 512) -> str:
+    return _call("VLMService", "chat", messages, max_new_tokens)
+
+
 def vlm_look(images: list[bytes], question: str) -> list[str]:
     return _call("VLMService", "look", images, question)
 

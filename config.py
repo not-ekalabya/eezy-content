@@ -1,7 +1,11 @@
+import os
 import shutil
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 ROOT = Path(__file__).parent
+load_dotenv(ROOT / ".env")
 DATA_DIR = ROOT / "data"
 DB_DIR = DATA_DIR / "lancedb"
 THUMBS_DIR = DATA_DIR / "thumbs"
@@ -17,6 +21,7 @@ PHOTO_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v"}
 
 AGENT_MAX_TURNS = 16
+AGENT_ENGINE = os.environ.get("AGENT_ENGINE", "vlm")  # vlm | claude
 
 FOLDERS_FILE = DATA_DIR / "folders.json"
 SYNC_INTERVAL_SECONDS = 60

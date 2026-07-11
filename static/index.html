@@ -3,17 +3,21 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>EezyContent</title>
+  <title>EezyContent  </title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
   <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" rel="stylesheet" />
-  <link rel="stylesheet" href="/static/styles.css?v=4" />
+  <link rel="stylesheet" href="/static/styles.css?v=5" />
 </head>
 <body>
   <header class="topbar">
     <a class="brand" href="/">EezyContent</a>
     <span class="brand-sub">SEMANTIC MEDIA SEARCH</span>
+    <button id="statsBtn" class="topbar-btn" type="button">
+      <span class="material-symbols-outlined">monitoring</span>
+      <span>Stats</span>
+    </button>
     <button id="foldersBtn" class="topbar-btn" type="button">
       <span class="material-symbols-outlined">folder_managed</span>
       <span>Folders</span>
@@ -98,6 +102,20 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=4"></script>
+  <div id="statsModal" class="hidden">
+    <div class="modal-backdrop"></div>
+    <div class="modal-card">
+      <div class="modal-head">
+        <h2>Library statistics</h2>
+        <button id="statsClose" class="icon-btn" aria-label="Close">
+          <span class="material-symbols-outlined">close</span>
+        </button>
+      </div>
+      <p class="modal-desc">Live snapshot of the indexed library — storage stays in your source folders, only derived data lives here.</p>
+      <div id="statsBody"><div class="stats-loading">loading…</div></div>
+    </div>
+  </div>
+
+  <script src="/static/app.js?v=5"></script>
 </body>
 </html>

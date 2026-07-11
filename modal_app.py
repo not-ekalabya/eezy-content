@@ -167,6 +167,20 @@ class VLMService:
         return self.processor.decode(trimmed, skip_special_tokens=True).strip()
 
     @modal.method()
+    def chat(self, messages: list[dict], max_new_tokens: int = 512) -> str:
+        """Text-only chat completion (agent brain). messages: [{role, content}]."""
+        text = self.processor.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True
+        )
+        inputs = self.processor(text=[text], return_tensors="pt").to("cuda")
+        with self.torch.inference_mode():
+            out = self.model.generate(
+                **inputs, max_new_tokens=max_new_tokens, do_sample=False
+            )
+        trimmed = out[0][inputs.input_ids.shape[1] :]
+        return self.processor.decode(trimmed, skip_special_tokens=True).strip()
+
+    @modal.method()
     def look(self, images: list[bytes], question: str) -> list[str]:
         """Answer a question about each image. Returns one answer per image."""
         prompt = (

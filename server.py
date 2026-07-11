@@ -16,7 +16,8 @@ import db
 import search_core
 import sync
 from agent import deep_search
-from config import ROOT, THUMBS_DIR
+from config import AGENT_ENGINE, ROOT, THUMBS_DIR
+from vlm_agent import deep_search_vlm
 
 
 @asynccontextmanager
@@ -106,9 +107,14 @@ def api_search(
 
 
 @app.get("/api/deep")
-async def api_deep(q: str = Query(..., min_length=1)):
+async def api_deep(
+    q: str = Query(..., min_length=1),
+    engine: str | None = Query(None, pattern="^(vlm|claude)$"),
+):
+    run = deep_search_vlm if (engine or AGENT_ENGINE) == "vlm" else deep_search
+
     async def stream():
-        async for event in deep_search(q):
+        async for event in run(q):
             if event.get("type") == "results":
                 event["segments"] = [_present(s) for s in event["segments"]]
             yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
@@ -159,6 +165,65 @@ def api_remove_folder(path: str = Query(..., min_length=1)):
 def api_sync():
     sync.request_sync()
     return {"status": sync.status}
+
+
+@app.get("/api/stats")
+def api_stats():
+    tbl = db.get_table()
+    rows = (
+        tbl.search()
+        .select(["asset_id", "asset_type", "uri", "t_end", "enriched", "transcript"])
+        .limit(1_000_000)
+        .to_list()
+    )
+
+    photos: set[str] = set()
+    videos: dict[str, float] = {}  # asset_id -> max t_end
+    uri_type: dict[str, str] = {}
+    shots = 0
+    enriched = 0
+    transcribed = 0
+    for r in rows:
+        uri_type[r["uri"]] = r["asset_type"]
+        if r["asset_type"] == "video":
+            shots += 1
+            videos[r["asset_id"]] = max(videos.get(r["asset_id"], 0.0), r["t_end"])
+        else:
+            photos.add(r["asset_id"])
+        if r["enriched"]:
+            enriched += 1
+        if r.get("transcript"):
+            transcribed += 1
+
+    bytes_by_type = {"photo": 0, "video": 0}
+    missing = 0
+    for uri, atype in uri_type.items():
+        try:
+            bytes_by_type[atype] += Path(uri).stat().st_size
+        except OSError:
+            missing += 1
+
+    thumb_bytes = sum(
+        f.stat().st_size for f in THUMBS_DIR.glob("*.jpg") if f.is_file()
+    )
+
+    return {
+        "photos": len(photos),
+        "videos": len(videos),
+        "segments": len(rows),
+        "shots": shots,
+        "video_seconds": round(sum(videos.values()), 1),
+        "enriched": enriched,
+        "enriched_pct": round(100 * enriched / len(rows), 1) if rows else 0.0,
+        "transcribed": transcribed,
+        "storage": {
+            "photo_bytes": bytes_by_type["photo"],
+            "video_bytes": bytes_by_type["video"],
+            "thumb_bytes": thumb_bytes,
+            "total_bytes": bytes_by_type["photo"] + bytes_by_type["video"] + thumb_bytes,
+            "missing_files": missing,
+        },
+    }
 
 
 @app.get("/api/file/{segment_id}")

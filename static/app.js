@@ -240,8 +240,109 @@ function closeViewer() {
 $("viewerClose").addEventListener("click", closeViewer);
 document.querySelector(".viewer-backdrop").addEventListener("click", closeViewer);
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape") { closeViewer(); closeFolders(); }
+  if (e.key === "Escape") { closeViewer(); closeFolders(); closeStats(); }
 });
+
+// ---------- library statistics ----------
+
+const statsModal = $("statsModal");
+const statsBody = $("statsBody");
+
+$("statsBtn").addEventListener("click", openStats);
+$("statsClose").addEventListener("click", closeStats);
+statsModal.querySelector(".modal-backdrop").addEventListener("click", closeStats);
+
+async function openStats() {
+  statsModal.classList.remove("hidden");
+  statsBody.innerHTML = `<div class="stats-loading">loading…</div>`;
+  try {
+    const res = await fetch("/api/stats");
+    if (!res.ok) throw new Error(await res.text());
+    renderStats(await res.json());
+  } catch (err) {
+    statsBody.innerHTML = `<div class="stats-loading error">error: ${esc(err.message)}</div>`;
+  }
+}
+
+function closeStats() {
+  statsModal.classList.add("hidden");
+}
+
+function renderStats(s) {
+  const st = s.storage;
+  const distParts = [
+    { label: "videos", bytes: st.video_bytes, cls: "video" },
+    { label: "photos", bytes: st.photo_bytes, cls: "photo" },
+    { label: "thumbs cache", bytes: st.thumb_bytes, cls: "thumbs" },
+  ].filter((p) => p.bytes > 0);
+
+  const cards = [
+    { label: "photos", value: s.photos.toLocaleString() },
+    { label: "videos", value: s.videos.toLocaleString() },
+    { label: "video shots", value: s.shots.toLocaleString() },
+    { label: "video runtime", value: fmtDuration(s.video_seconds) },
+    { label: "index segments", value: s.segments.toLocaleString() },
+    { label: "total storage", value: fmtBytes(st.total_bytes) },
+  ];
+
+  statsBody.innerHTML = `
+    <div class="stats-grid">
+      ${cards.map((c) => `
+        <div class="stat-card">
+          <span class="stat-value">${c.value}</span>
+          <span class="stat-label">${c.label}</span>
+        </div>`).join("")}
+    </div>
+
+    <div class="stats-section">
+      <div class="stats-section-head">
+        <span class="meta-label">storage distribution</span>
+        <span class="mono-chip">${fmtBytes(st.total_bytes)}</span>
+      </div>
+      <div class="dist-bar">
+        ${distParts.map((p) => `<span class="dist-seg ${p.cls}" style="flex:${p.bytes}" title="${p.label} · ${fmtBytes(p.bytes)}"></span>`).join("") || `<span class="dist-seg empty" style="flex:1"></span>`}
+      </div>
+      <div class="dist-legend">
+        ${distParts.map((p) => `<span><i class="dot ${p.cls}"></i>${p.label} · ${fmtBytes(p.bytes)} (${pct(p.bytes, st.total_bytes)})</span>`).join("") || `<span>library empty</span>`}
+      </div>
+      ${st.missing_files ? `<div class="stats-warn">${st.missing_files} indexed file(s) missing on disk — size not counted</div>` : ""}
+    </div>
+
+    <div class="stats-section">
+      <div class="stats-section-head">
+        <span class="meta-label">AI enrichment</span>
+        <span class="mono-chip">${s.enriched_pct}%</span>
+      </div>
+      <div class="dist-bar">
+        <span class="dist-seg enriched" style="flex:${s.enriched}"></span>
+        <span class="dist-seg empty" style="flex:${Math.max(s.segments - s.enriched, 0)}"></span>
+      </div>
+      <div class="dist-legend">
+        <span><i class="dot enriched"></i>${s.enriched.toLocaleString()} of ${s.segments.toLocaleString()} segments captioned</span>
+        <span>${s.transcribed.toLocaleString()} with transcript</span>
+      </div>
+    </div>`;
+}
+
+function pct(part, total) {
+  return total ? `${Math.round((1000 * part) / total) / 10}%` : "0%";
+}
+
+function fmtBytes(b) {
+  if (!b) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let i = 0;
+  while (b >= 1024 && i < units.length - 1) { b /= 1024; i++; }
+  return `${b >= 100 || i === 0 ? Math.round(b) : b.toFixed(1)} ${units[i]}`;
+}
+
+function fmtDuration(sec) {
+  sec = Math.round(sec || 0);
+  const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
+  if (h) return `${h}h ${m}m`;
+  if (m) return `${m}m ${s}s`;
+  return `${s}s`;
+}
 
 // ---------- synced folders ----------
 
