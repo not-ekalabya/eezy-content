@@ -1,4 +1,4 @@
-"""Modal GPU services: SigLIP-2 embeddings, Qwen2.5-VL-3B, Whisper ASR.
+"""Modal GPU services: SigLIP-2 embeddings, Qwen3.5-9B (AWQ, vLLM), Whisper ASR.
 
 Deploy:  modal deploy modal_app.py
 """
@@ -18,7 +18,9 @@ CACHE_DIR = "/hf-cache"
 secrets = [modal.Secret.from_dotenv(Path(__file__).parent)]
 
 EMBED_MODEL = "google/siglip2-so400m-patch14-384"
-VLM_MODEL = "Qwen/Qwen2.5-VL-3B-Instruct"
+# 4-bit AWQ of the multimodal Qwen3.5-9B: agent brain and eyes in one model.
+# ~6 GB weights -> fits an L4 with ~14 GB left for vLLM KV cache.
+VLM_MODEL = "QuantTrio/Qwen3.5-9B-AWQ"
 WHISPER_MODEL = "large-v3-turbo"
 
 embed_image = (
@@ -36,15 +38,24 @@ embed_image = (
 
 vlm_image = (
     modal.Image.debian_slim(python_version="3.11")
+    .apt_install("ffmpeg")  # torchcodec (vLLM video input) needs libav* at runtime
     .pip_install(
-        "torch==2.5.1",
-        "torchvision==0.20.1",  # Qwen2VL processor requires it
-        "transformers>=4.49.0",
-        "accelerate",
-        "qwen-vl-utils",
+        "vllm>=0.11",
         "pillow",
+        "hf_transfer",
     )
-    .env({"HF_HOME": CACHE_DIR})
+    .env(
+        {
+            "HF_HOME": CACHE_DIR,
+            "HF_HUB_ENABLE_HF_TRANSFER": "1",
+            # persist torch.compile/AOT artifacts across cold starts
+            "VLLM_CACHE_ROOT": f"{CACHE_DIR}/vllm-cache",
+            # no nvcc in debian_slim -> flashinfer JIT crashes the engine;
+            # FA2 attention + torch sampler avoid flashinfer entirely
+            "VLLM_ATTENTION_BACKEND": "FLASH_ATTN",
+            "VLLM_USE_FLASHINFER_SAMPLER": "0",
+        }
+    )
 )
 
 # ctranslate2 needs cuBLAS 12 + cuDNN 9 — debian_slim lacks them
@@ -125,60 +136,97 @@ class EmbeddingService:
 class VLMService:
     @modal.enter()
     def load(self):
-        import torch
-        from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
+        from transformers import AutoProcessor
+        from vllm import LLM, SamplingParams
 
-        self.torch = torch
-        self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-            VLM_MODEL, torch_dtype=torch.bfloat16, device_map="cuda"
-        ).eval()
-        # cap image tokens: 256..768 visual patches keeps latency low
-        self.processor = AutoProcessor.from_pretrained(
-            VLM_MODEL, min_pixels=256 * 28 * 28, max_pixels=768 * 28 * 28
+        self.SamplingParams = SamplingParams
+        self.llm = LLM(
+            model=VLM_MODEL,
+            max_model_len=16384,
+            # model weights + vision encoder take ~11.2 GiB of the L4's 24;
+            # 0.92 overcommitted and OOM-killed the engine during KV allocation
+            gpu_memory_utilization=0.85,
+            enable_prefix_caching=True,  # agent loop resends history; reuse KV
+            limit_mm_per_prompt={"image": 1},
+            # cap image tokens: 256..768 visual patches keeps latency low
+            mm_processor_kwargs={
+                "min_pixels": 256 * 28 * 28,
+                "max_pixels": 768 * 28 * 28,
+            },
         )
+        self.processor = AutoProcessor.from_pretrained(VLM_MODEL)
         hf_cache.commit()
 
-    def _generate(self, image_bytes: bytes, prompt: str, max_new_tokens: int) -> str:
-        from PIL import Image
-        from qwen_vl_utils import process_vision_info
-
-        pil = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-        messages = [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "image", "image": pil},
-                    {"type": "text", "text": prompt},
-                ],
-            }
-        ]
-        text = self.processor.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True
-        )
-        image_inputs, _ = process_vision_info(messages)
-        inputs = self.processor(
-            text=[text], images=image_inputs, return_tensors="pt"
-        ).to("cuda")
-        with self.torch.inference_mode():
-            out = self.model.generate(
-                **inputs, max_new_tokens=max_new_tokens, do_sample=False
+    def _template(self, messages: list[dict]) -> str:
+        try:
+            return self.processor.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True,
+                enable_thinking=False,
             )
-        trimmed = out[0][inputs.input_ids.shape[1] :]
-        return self.processor.decode(trimmed, skip_special_tokens=True).strip()
+        except TypeError:  # chat template without a thinking switch
+            return self.processor.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True
+            )
+
+    def _sampling(self, max_new_tokens: int, json_schema: dict | None = None):
+        kwargs = {"temperature": 0.0, "max_tokens": max_new_tokens}
+        if json_schema:
+            try:
+                from vllm.sampling_params import StructuredOutputsParams
+
+                kwargs["structured_outputs"] = StructuredOutputsParams(json=json_schema)
+            except ImportError:  # pre-0.11 API
+                from vllm.sampling_params import GuidedDecodingParams
+
+                kwargs["guided_decoding"] = GuidedDecodingParams(json=json_schema)
+        return self.SamplingParams(**kwargs)
+
+    def _batch_generate(
+        self, images: list[bytes], prompt: str, max_new_tokens: int
+    ) -> list[str]:
+        """One prompt applied to N images, generated as a single vLLM batch."""
+        from PIL import Image
+
+        text = self._template(
+            [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image"},
+                        {"type": "text", "text": prompt},
+                    ],
+                }
+            ]
+        )
+        requests = [
+            {
+                "prompt": text,
+                "multi_modal_data": {
+                    "image": Image.open(io.BytesIO(b)).convert("RGB")
+                },
+            }
+            for b in images
+        ]
+        outs = self.llm.generate(requests, self._sampling(max_new_tokens))
+        return [o.outputs[0].text.strip() for o in outs]
 
     @modal.method()
-    def chat(self, messages: list[dict], max_new_tokens: int = 512) -> str:
-        """Text-only chat completion (agent brain). messages: [{role, content}]."""
-        text = self.processor.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True
+    def chat(
+        self,
+        messages: list[dict],
+        max_new_tokens: int = 512,
+        json_schema: dict | None = None,
+    ) -> str:
+        """Text-only chat completion (agent brain). messages: [{role, content}].
+
+        With json_schema set, output is constrained to valid JSON matching it.
+        """
+        outs = self.llm.generate(
+            [self._template(messages)], self._sampling(max_new_tokens, json_schema)
         )
-        inputs = self.processor(text=[text], return_tensors="pt").to("cuda")
-        with self.torch.inference_mode():
-            out = self.model.generate(
-                **inputs, max_new_tokens=max_new_tokens, do_sample=False
-            )
-        trimmed = out[0][inputs.input_ids.shape[1] :]
-        return self.processor.decode(trimmed, skip_special_tokens=True).strip()
+        return outs[0].outputs[0].text.strip()
 
     @modal.method()
     def look(self, images: list[bytes], question: str) -> list[str]:
@@ -188,7 +236,7 @@ class VLMService:
             "If the answer is no or the thing is absent, say so explicitly.\n"
             f"Question: {question}"
         )
-        return [self._generate(b, prompt, 160) for b in images]
+        return self._batch_generate(images, prompt, 160)
 
     @modal.method()
     def caption(self, images: list[bytes]) -> list[str]:
@@ -198,7 +246,7 @@ class VLMService:
             '{"caption": "<2-3 sentences: subjects, actions, setting, notable objects, '
             'any visible text, lighting/mood>", "tags": ["<5-12 short lowercase tags>"]}'
         )
-        return [self._generate(b, prompt, 260) for b in images]
+        return self._batch_generate(images, prompt, 260)
 
 
 @app.cls(

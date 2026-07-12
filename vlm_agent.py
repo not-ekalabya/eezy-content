@@ -1,8 +1,13 @@
-"""Deep search driven by the Qwen2.5-VL endpoint itself (no Claude).
+"""Deep search driven by the Qwen3.5-9B endpoint itself (no Claude).
 
 Same tools and SSE event shape as agent.deep_search, but the reasoning
 loop is a ReAct-style JSON protocol running on the Modal VLM's `chat`
 method — brain and eyes share one warm L4 container.
+
+Loop optimizations:
+- turn 1 is pre-seeded with dense + text search results (saves ~2 turns)
+- actions are schema-constrained via vLLM guided decoding (no parse retries)
+- vLLM prefix caching makes the growing-history resend cheap
 """
 
 import asyncio
@@ -15,7 +20,23 @@ import search_core
 from agent import MAX_VLM_IMAGES_PER_QUERY, _brief, _fmt, _parse_caption, _thumb_bytes
 from config import AGENT_MAX_TURNS
 
-MAX_OBSERVATION_CHARS = 4000
+MAX_OBSERVATION_CHARS = 3000
+MAX_PARSE_FAILURES = 3
+ACTION_MAX_TOKENS = 320
+
+ACTION_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "thought": {"type": "string", "maxLength": 400},
+        "tool": {
+            "type": "string",
+            "enum": ["search_dense", "search_text", "look", "enrich", "finish"],
+        },
+        "args": {"type": "object"},
+    },
+    "required": ["thought", "tool", "args"],
+    "additionalProperties": False,
+}
 
 SYSTEM_PROMPT = """You are a search agent for a personal photo/video library. You cannot see images directly; tools return text.
 
@@ -31,7 +52,7 @@ TOOLS:
 RULES:
 - Respond with EXACTLY one JSON object and nothing else, in this form:
   {"thought": "<brief reasoning>", "tool": "<tool name>", "args": {...}}
-- Start with search_dense and/or search_text; try multiple phrasings if results are weak.
+- Results of an initial search_dense and search_text run are already in the first message. Re-search only with genuinely different phrasings if they are weak.
 - Verify doubtful candidates with look; trust look answers over search rank.
 - enrich promising candidates that have enriched=false.
 - Be economical; then call finish. Always call finish, even if nothing matched."""
@@ -145,23 +166,50 @@ async def deep_search_vlm(user_query: str) -> AsyncGenerator[dict, None]:
         "enriched": 0,
         "last_ids": [],
     }
-    messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": f"Search request: {user_query}"},
-    ]
     seen_calls: set[str] = set()
     finished = False
+    parse_failures = 0
 
     try:
+        # seed turn 1 with both searches so the agent starts from evidence
+        yield {"type": "tool", "name": "search_dense", "input": _brief({"query": user_query})}
+        yield {"type": "tool", "name": "search_text", "input": _brief({"keywords": user_query})}
+        dense_rows, text_rows = await asyncio.gather(
+            asyncio.to_thread(search_core.dense_search, user_query, 20),
+            asyncio.to_thread(search_core.text_search, user_query, 20),
+        )
+        state["last_ids"] = [r["id"] for r in dense_rows] or [r["id"] for r in text_rows]
+        for name, key_field in (("search_dense", "query"), ("search_text", "keywords")):
+            seen_calls.add(
+                f"{name}:{json.dumps({key_field: user_query, 'k': 20}, sort_keys=True, ensure_ascii=False)}"
+            )
+
+        messages = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": (
+                    f"Search request: {user_query}\n\n"
+                    f"search_dense results: {_fmt(dense_rows)[:MAX_OBSERVATION_CHARS]}\n\n"
+                    f"search_text results: {_fmt(text_rows)[:MAX_OBSERVATION_CHARS]}"
+                ),
+            },
+        ]
+
         for turn in range(AGENT_MAX_TURNS):
             if turn == AGENT_MAX_TURNS - 1:
                 messages.append(
                     {"role": "user", "content": "Turn budget exhausted. Call finish now with your best results."}
                 )
-            raw = await asyncio.to_thread(remote.vlm_chat, messages, 512)
+            raw = await asyncio.to_thread(
+                remote.vlm_chat, messages, ACTION_MAX_TOKENS, ACTION_SCHEMA
+            )
             messages.append({"role": "assistant", "content": raw})
             action = _parse_action(raw)
             if not action or not isinstance(action.get("args", {}), dict):
+                parse_failures += 1
+                if parse_failures >= MAX_PARSE_FAILURES:
+                    break
                 messages.append(
                     {"role": "user", "content": 'Invalid response. Reply with exactly one JSON object: {"thought": "...", "tool": "...", "args": {...}}'}
                 )

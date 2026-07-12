@@ -1,4 +1,4 @@
-"""Deep search: Claude agent orchestrating the index + 4B VLM on Modal.
+"""Deep search: Claude agent orchestrating the index + Qwen3.5-9B VLM on Modal.
 
 The agent never sees pixels — the VLM reads frames and returns text.
 `enrich` writes captions/tags back to LanceDB (lazy index enrichment).
